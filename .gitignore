@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node
+node_modules/
+
+# Claude Code workspace (files Claude creates)
+workspace/*
+!workspace/.gitkeep
