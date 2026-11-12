@@ -8,13 +8,15 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import select, text, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from app import models, schemas
-from app.answers import SCHEMA_VERSION, export_markdown, export_turn, split_references, upgrade_export
-from app.claude import MODELS, research_prompt, run_turn
+from app import jobs, mcp_server, models, schemas
+from app.answers import SCHEMA_VERSION, export_markdown, export_turn, upgrade_export
+from app.api_v1 import api as api_v1
+from app.claude import MODELS
 from app.config import settings
 from app.db import Base, SessionLocal, engine, get_db
+from app.integrations import router as integrations_router
 from app.sources import router as sources_router, seed_sources
 
 logger = logging.getLogger(__name__)
@@ -26,8 +28,13 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     _migrate_turns()
     _migrate_exports()
+    _migrate_conversations()
     seed_sources()
-    yield
+    if count := jobs.recover_interrupted():
+        logger.warning("Marked %d answers interrupted by a restart as errors", count)
+    async with mcp_server.server.session_manager.run():
+        yield
+        await jobs.cancel_all()  # save partial answers of anything still running
 
 
 def _migrate_turns() -> None:
@@ -89,6 +96,23 @@ def _migrate_exports() -> None:
             logger.info("Upgraded %d stored exports to schema_version %d", len(turns), SCHEMA_VERSION)
 
 
+def _migrate_conversations() -> None:
+    """Add conversations.integration_id to tables created before integrations existed. Idempotent."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS integration_id INTEGER "
+                "REFERENCES integrations(id) ON DELETE SET NULL"
+            )
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_conversations_integration_id ON conversations (integration_id)")
+        )
+
+
+# Built at import so its session manager exists when the lifespan starts it.
+_mcp_app = mcp_server.asgi_app()
+
 app = FastAPI(title="info-center API", lifespan=lifespan)
 
 app.add_middleware(
@@ -100,6 +124,8 @@ app.add_middleware(
 )
 
 app.include_router(sources_router)
+app.include_router(integrations_router)
+app.mount("/api/v1", api_v1)  # public API for other systems, with its own docs at /api/v1/docs
 
 
 def _get_conversation(db: Session, conversation_id: int) -> models.Conversation:
@@ -133,7 +159,11 @@ def prompt_history(limit: int = 200, db: Session = Depends(get_db)):
 
 @app.get("/api/conversations", response_model=list[schemas.ConversationRead])
 def list_conversations(db: Session = Depends(get_db)):
-    stmt = select(models.Conversation).order_by(models.Conversation.updated_at.desc())
+    stmt = (
+        select(models.Conversation)
+        .options(selectinload(models.Conversation.integration))
+        .order_by(models.Conversation.updated_at.desc())
+    )
     return db.scalars(stmt).all()
 
 
@@ -178,8 +208,12 @@ def update_conversation(
 
 
 @app.delete("/api/conversations/{conversation_id}", status_code=204)
-def delete_conversation(conversation_id: int, db: Session = Depends(get_db)):
-    db.delete(_get_conversation(db, conversation_id))
+async def delete_conversation(conversation_id: int, db: Session = Depends(get_db)):
+    conversation = _get_conversation(db, conversation_id)
+    for turn in conversation.turns:  # stop an answer still being written; there's nowhere to save it
+        if turn.status == "running":
+            jobs.cancel(turn.id)
+    db.delete(conversation)
     db.commit()
 
 
@@ -191,105 +225,47 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
 
-class _Answer:
-    """Folds streamed events into the answer being written (mirrors applyEvent in frontend/src/api.js)."""
-
-    def __init__(self) -> None:
-        self.text = ""
-        self.activity: list[dict] = []
-        self.errors: list[str] = []
-        self.new_message = False
-
-    def add(self, event: dict) -> None:
-        kind = event["type"]
-        if kind == "text":
-            # Text from consecutive assistant messages (e.g. before and after a tool call) is new paragraphs.
-            if self.new_message and self.text and not self.text.endswith("\n\n"):
-                self.text = self.text.rstrip("\n") + "\n\n"
-            self.new_message = False
-            self.text += event["text"]
-        elif kind == "message_start":
-            self.new_message = True
-        elif kind in ("tool_use", "tool_result"):
-            self.activity.append({k: v for k, v in event.items()})
-        elif kind == "error":
-            self.errors.append(event["text"])
-
-
-@app.post("/api/conversations/{conversation_id}/messages")
-def send_message(conversation_id: int, payload: schemas.ChatRequest, db: Session = Depends(get_db)):
-    conversation = _get_conversation(db, conversation_id)
-    if not conversation.turns:
-        conversation.title = payload.content.strip().splitlines()[0][:80] or "New conversation"
-
-    sources = _sources(db)
-    research = None
-    if payload.research:
-        sources_by_level: dict[int, list[str]] = {}
-        for name, level in sources:
-            sources_by_level.setdefault(level, []).append(name)
-        research = research_prompt(sources_by_level)
-
-    # Saved before Claude runs, so the question is kept even if the answer fails.
-    turn = models.Turn(
-        conversation_id=conversation.id,
-        question=payload.content,
-        model=conversation.model,
-        mode="research" if payload.research else "normal",
-    )
-    db.add(turn)
-    db.commit()
-    turn_id, model, resume = turn.id, conversation.model, conversation.claude_session_id
+def _event_stream(turn_id: int) -> StreamingResponse:
+    """Server-sent events for an answer, from its start. Disconnecting stops the stream, not the answer."""
 
     async def stream():
-        answer = _Answer()
-        session_id, cost, finished = resume, None, False
-        saved = None
-        try:
-            async for event in run_turn(payload.content, model, resume, research):
-                if event["type"] == "session":
-                    session_id = event["session_id"] or session_id
-                    continue
-                if event["type"] == "result":
-                    session_id = event["session_id"] or session_id
-                    cost, finished = event["cost_usd"], True
-                    if event["is_error"]:
-                        answer.add({"type": "error", "text": event["result"] or event["subtype"]})
-                answer.add(event)
-                yield _sse(event)
-        except Exception as exc:  # surface SDK/CLI failures to the UI
-            logger.exception("Claude turn failed")
-            # The SDK also raises after an error result; don't report the same failure twice.
-            if not answer.errors:
-                answer.add({"type": "error", "text": str(exc)})
-                yield _sse({"type": "error", "text": str(exc)})
-        finally:
-            # Runs on completion, error, and client abort (Stop button), so partial answers are kept.
-            annotated, references = split_references(answer.text)
-            with SessionLocal() as session:
-                row = session.get(models.Turn, turn_id)
-                if row is not None:
-                    row.activity = answer.activity
-                    row.error = "\n".join(answer.errors) or None
-                    row.status = "error" if answer.errors else "complete" if finished else "stopped"
-                    row.cost_usd = cost
-                    row.metadata_ = export_turn(row, annotated, references, sources)
-                    convo = session.get(models.Conversation, conversation_id)
-                    # Only resume from sessions that actually produced output; a turn that failed
-                    # before Claude responded may not have a transcript on disk.
-                    if convo is not None and (answer.text or answer.activity):
-                        convo.claude_session_id = session_id
-                    session.commit()
-                    saved = schemas.TurnRead.model_validate(row).model_dump(mode="json")
-        if saved is not None:
-            yield _sse({"type": "saved", "turn": saved})
-        yield _sse({"type": "done"})
+        async for event in jobs.watch(turn_id):
+            yield _sse(event)
 
     return StreamingResponse(
         stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# Async because it starts a background job on the event loop.
+@app.post("/api/conversations/{conversation_id}/messages")
+async def send_message(conversation_id: int, payload: schemas.ChatRequest, db: Session = Depends(get_db)):
+    """Ask a question in a chat and stream the answer. The first event is {"type": "turn", "turn_id"}."""
+    conversation = _get_conversation(db, conversation_id)
+    try:
+        turn = jobs.start_turn(db, conversation, payload.content, payload.research)
+    except jobs.Busy as exc:
+        raise HTTPException(409, str(exc)) from None
+    return _event_stream(turn.id)
+
+
+@app.get("/api/turns/{turn_id}/stream")
+def watch_turn(turn_id: int, db: Session = Depends(get_db)):
+    """Watch an answer from its start: a running one live, a finished one as its saved copy."""
+    if db.get(models.Turn, turn_id) is None:
+        raise HTTPException(404, "Answer not found")
+    return _event_stream(turn_id)
+
+
+@app.post("/api/turns/{turn_id}/cancel", status_code=202)
+async def cancel_turn(turn_id: int, db: Session = Depends(get_db)):
+    """Stop a running answer (the Stop button). The partial answer is saved as "stopped"."""
+    turn = db.get(models.Turn, turn_id)
+    if turn is None:
+        raise HTTPException(404, "Answer not found")
+    return {"stopping": jobs.cancel(turn_id), "status": turn.status}
 
 
 def _find(db: Session, model, ref: str, label: str):
@@ -336,3 +312,7 @@ def export_conversation(conversation_ref: str, db: Session = Depends(get_db)):
     conversation = _find(db, models.Conversation, conversation_ref, "Conversation")
     # Answers still being written have no export yet.
     return [turn.metadata_ for turn in conversation.turns if turn.metadata_ is not None]
+
+
+# MCP for AI agents (Streamable HTTP at /mcp). Mounted last: its app only routes /mcp, everything else 404s.
+app.mount("/", _mcp_app)

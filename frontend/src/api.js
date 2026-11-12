@@ -29,23 +29,25 @@ export const api = {
     request("/sources", { method: "POST", body: JSON.stringify({ name, level }) }),
   updateSource: (id, patch) => request(`/sources/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteSource: (id) => request(`/sources/${id}`, { method: "DELETE" }),
+
+  // Stop an answer (the Stop button). It keeps running on the server until stopped, even if the page closes.
+  cancelTurn: (id) => request(`/turns/${id}/cancel`, { method: "POST" }),
+
+  listIntegrations: () => request("/integrations"),
+  integrationConnection: () => request("/integrations/connection"),
+  createIntegration: (data) => request("/integrations", { method: "POST", body: JSON.stringify(data) }),
+  updateIntegration: (id, patch) =>
+    request(`/integrations/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  rotateIntegrationKey: (id) => request(`/integrations/${id}/rotate-key`, { method: "POST" }),
+  deleteIntegration: (id) => request(`/integrations/${id}`, { method: "DELETE" }),
 };
 
-/**
- * Send a chat message and stream Claude Code's reply as server-sent events.
- * Calls onEvent for each event; resolves when the stream ends.
- */
-export async function streamMessage(conversationId, content, { research = false, onEvent, signal }) {
-  const res = await fetch(`/api/conversations/${conversationId}/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content, research }),
-    signal,
-  });
+/** Read a server-sent event stream, calling onEvent for each event; resolves when the stream ends. */
+async function readEvents(res, onEvent) {
   if (!res.ok || !res.body) {
-    throw new Error(`${res.status} ${res.statusText}`);
+    const body = await res.json().catch(() => null);
+    throw new Error(typeof body?.detail === "string" ? body.detail : `${res.status} ${res.statusText}`);
   }
-
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "";
   for (;;) {
@@ -64,6 +66,25 @@ export async function streamMessage(conversationId, content, { research = false,
       if (data) onEvent(JSON.parse(data));
     }
   }
+}
+
+/**
+ * Send a chat message and stream Claude Code's reply. The first event is {type: "turn", turn_id}.
+ * Aborting `signal` only stops watching: the answer keeps going on the server (use api.cancelTurn to stop it).
+ */
+export async function streamMessage(conversationId, content, { research = false, onEvent, signal }) {
+  const res = await fetch(`/api/conversations/${conversationId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content, research }),
+    signal,
+  });
+  await readEvents(res, onEvent);
+}
+
+/** Watch an answer from its start (e.g. one still running after a reload, or started by an integration). */
+export async function watchTurn(turnId, { onEvent, signal }) {
+  await readEvents(await fetch(`/api/turns/${turnId}/stream`, { signal }), onEvent);
 }
 
 /** A turn being answered, before the server has saved it (no id yet). */
@@ -92,6 +113,8 @@ export function applyEvent(turn, event) {
       if (turn.newMessage && content && !content.endsWith("\n\n")) content = `${content.replace(/\n+$/, "")}\n\n`;
       return { ...turn, content: content + event.text, newMessage: false };
     }
+    case "turn":
+      return { ...turn, turnId: event.turn_id }; // the server's id, for Stop; `id` stays null until saved
     case "message_start":
       return { ...turn, newMessage: true };
     case "tool_use":

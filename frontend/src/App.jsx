@@ -2,12 +2,17 @@ import { AppBar, Box, Tab, Tabs, Toolbar, Typography } from "@mui/material";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
 import ThemeToggle from "./components/ThemeToggle";
 import ChatPage from "./pages/ChatPage";
+import IntegrationsPage from "./pages/IntegrationsPage";
 import SourcePage from "./pages/SourcePage";
 
 export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
-  const section = location.pathname.startsWith("/source") ? "source" : "chat";
+  const section = location.pathname.startsWith("/source")
+    ? "source"
+    : location.pathname.startsWith("/integrations")
+      ? "integrations"
+      : "chat";
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100dvh" }}>
@@ -23,6 +28,7 @@ export default function App() {
           >
             <Tab value="chat" label="Conversation" />
             <Tab value="source" label="Source" />
+            <Tab value="integrations" label="Integrations" />
           </Tabs>
           <ThemeToggle />
         </Toolbar>
@@ -37,6 +43,7 @@ export default function App() {
         <Route path="/" element={<Navigate to="/chat" replace />} />
         <Route path="/chat" element={null} />
         <Route path="/source" element={<SourcePage />} />
+        <Route path="/integrations" element={<IntegrationsPage />} />
         <Route path="*" element={<Navigate to="/chat" replace />} />
       </Routes>
     </Box>

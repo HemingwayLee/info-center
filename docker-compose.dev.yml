@@ -28,6 +28,9 @@ services:
       CLAUDE_WORKSPACE: /workspace
       # Keep Claude Code's session transcripts so conversations can resume after restarts.
       CLAUDE_CONFIG_DIR: /claude-config
+      # How other systems reach this backend (shown in the Integrations tab), and how many answers run at once.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8765}
+      MAX_CONCURRENT_TURNS: ${MAX_CONCURRENT_TURNS:-3}
     ports:
       - "8765:8765"
     volumes:

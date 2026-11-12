@@ -97,7 +97,13 @@ export default function Sidebar({ conversations, currentId, onSelect, onNew, onD
                   />
                 ) : (
                   <>
-                    <ListItemText primary={c.title} title={c.title} slotProps={{ primary: { noWrap: true } }} />
+                    <ListItemText
+                      primary={c.title}
+                      // Chats started by another system (MCP or /api/v1) name it.
+                      secondary={c.integration_name ? `via ${c.integration_name}` : undefined}
+                      title={c.title}
+                      slotProps={{ primary: { noWrap: true }, secondary: { noWrap: true, fontSize: 12 } }}
+                    />
                     <Box
                       className="actions"
                       sx={{ display: "flex", flexShrink: 0, visibility: active ? "visible" : "hidden" }}

@@ -115,11 +115,18 @@ def _tool_result_content(content: Any) -> str:
 
 
 async def run_turn(
-    prompt: str, model: str, resume: str | None, research: str | None = None
+    prompt: str,
+    model: str,
+    resume: str | None,
+    research: str | None = None,
+    allowed_tools: list[str] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run one chat turn through Claude Code and yield UI events.
 
     `research` is extra system-prompt text for research mode (see research_prompt), or None to answer normally.
+    `allowed_tools` overrides settings.claude_allowed_tools and also limits which tools exist at all, so Claude
+    can't use anything else (integrations get a research-only set). allowed_tools alone isn't a hard limit:
+    Claude Code still runs commands it considers harmless, like `echo`, without asking.
 
     Event shapes:
       {"type": "session", "session_id"}
@@ -143,7 +150,9 @@ async def run_turn(
             "snapshot": False,
             **({"append": research} if research else {}),
         },
-        allowed_tools=settings.claude_allowed_tools,
+        allowed_tools=settings.claude_allowed_tools if allowed_tools is None else allowed_tools,
+        # A restricted run only gets the listed tools; Claude never sees the rest.
+        **({"tools": allowed_tools} if allowed_tools is not None else {}),
         # No interactive approval in the web UI: anything not in allowed_tools is denied.
         permission_mode="dontAsk",
         include_partial_messages=True,
