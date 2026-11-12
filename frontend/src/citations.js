@@ -42,3 +42,24 @@ export const citeNumbers = (href) =>
     .split(/[\s,]+/)
     .map(Number)
     .filter((n) => Number.isInteger(n) && n > 0);
+
+/**
+ * A saved answer's text with Claude's span markers put back, ready for <Markdown>: each annotation
+ * { start, end, cite: [1, 2] } or { start, end, confidence: 85 } (Unicode code point offsets into content,
+ * end exclusive) becomes [text](cite:1,2) or [text](conf:85). Mirrors with_markers in backend/app/answers.py.
+ */
+export function withMarkers(content, annotations = []) {
+  const chars = Array.from(content); // code points, matching Python's string indexes
+  const out = [];
+  let pos = 0;
+  for (const a of [...annotations].sort((x, y) => x.start - y.start)) {
+    const { start, end } = a;
+    if (!(Number.isInteger(start) && Number.isInteger(end) && pos <= start && start < end && end <= chars.length)) continue;
+    const text = chars.slice(start, end).join("");
+    const marker = a.cite?.length ? `cite:${a.cite.join(",")}` : a.confidence != null ? `conf:${a.confidence}` : null;
+    out.push(chars.slice(pos, start).join(""), marker ? `[${text}](${marker})` : text);
+    pos = end;
+  }
+  out.push(chars.slice(pos).join(""));
+  return out.join("");
+}

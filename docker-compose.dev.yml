@@ -55,6 +55,28 @@ services:
     depends_on:
       - backend
 
+  # Database browser (tables, rows, SQL). Connects to the app database by default; use the
+  # UI's connection screen for other databases. Reached through pgweb-proxy below.
+  pgweb:
+    image: sosedoff/pgweb:0.17.0
+    environment:
+      PGWEB_DATABASE_URL: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@db:5432/${POSTGRES_DB:-app}?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Serves pgweb at localhost:8081 with our additions (tools/pgweb/custom, e.g. JSON pretty-printing).
+  # Bound to localhost because pgweb has no login.
+  pgweb-proxy:
+    image: nginx:1.30.6-alpine
+    ports:
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - ./tools/pgweb/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./tools/pgweb/custom:/usr/share/nginx/pgweb-custom:ro
+    depends_on:
+      - pgweb
+
 volumes:
   pgdata:
   claude-config:

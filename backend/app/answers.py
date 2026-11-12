@@ -1,9 +1,12 @@
-"""Answer formatting: parse references, resolve source credibility, and build the portable export.
+"""Answer formatting: parse references and annotations, resolve source credibility, build the portable export.
 
-Stored answers keep the chat UI's span markers, which record exactly which words a citation or confidence
-covers:
+Claude marks which words a citation or confidence covers with span markers (see RESEARCH_PROMPT in claude.py):
     [claim from a source](cite:1,2)      [Claude's own claim](conf:85)
-The export also has `content_markdown` in a plain form any LLM understands:
+Saved answers don't keep them. `content` is plain Markdown, and each marker becomes an entry in `annotations`:
+    {"start": 0, "end": 19, "cite": [1, 2]}      {"start": 21, "end": 39, "confidence": 85}
+with start/end as Unicode code point offsets into `content` (end exclusive). The chat UI puts the markers back
+to render them (withMarkers in frontend/src/citations.js); the Markdown export writes them in a plain form any
+LLM understands:
     claim from a source [1, 2]           Claude's own claim (confidence: 85%)
 """
 
@@ -12,12 +15,15 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 CONVENTIONS = (
-    "[n] cites reference n in `references`. (confidence: N%) marks a claim the answering model made from its "
-    "own knowledge or reasoning, without a source, with its confidence that it is correct. Reference `level` "
-    "is the user's credibility rating for that source: 1 (most credible) to 4 (least); null means unrated."
+    "`content` is the answer as Markdown. Each `annotations` entry covers content[start:end], counted in Unicode "
+    "code points (end exclusive): `cite` lists the numbers of the `references` that text comes from; "
+    "`confidence` (0-100) marks a claim the answering model made from its own knowledge or reasoning, without a "
+    "source, with its confidence that it is correct. In the Markdown export, [n] cites reference n and "
+    "(confidence: N%) follows such a claim. Reference `level` is the user's credibility rating for that source: "
+    "1 (most credible) to 4 (least); null means unrated."
 )
 
 # ---- References section -------------------------------------------------------------------------------
@@ -65,27 +71,82 @@ def split_references(text: str) -> tuple[str, list[dict[str, Any]]]:
     return text, []
 
 
-# ---- Plain markers -------------------------------------------------------------------------------------
+# ---- Annotations --------------------------------------------------------------------------------------
 
 # [text](cite:1,2) or [text](conf:85); the text may contain one level of nested brackets.
 _MARKER = re.compile(r"\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\((cite|conf):([^)\n]*)\)")
 
 
-def _plain_marker(m: re.Match) -> str:
-    text, kind, value = m.group(1), m.group(2), m.group(3)
+def _marker_value(kind: str, value: str) -> dict[str, Any] | None:
+    """{"cite": [1, 2]} or {"confidence": 85} from a marker's value, or None if it has no usable value."""
     if kind == "cite":
-        numbers = [n for n in re.split(r"[\s,]+", value) if n.isdigit()]
-        return f"{text} [{', '.join(numbers)}]" if numbers else text
+        numbers = [int(n) for n in re.split(r"[\s,]+", value) if n.isdigit() and int(n) > 0]
+        return {"cite": numbers} if numbers else None
     try:
-        pct = max(0, min(100, round(float(value.strip().rstrip('%')))))
+        return {"confidence": max(0, min(100, round(float(value.strip().rstrip("%")))))}
     except ValueError:
-        return text
-    return f"{text} (confidence: {pct}%)"
+        return None
 
 
-def plain_markdown(annotated: str) -> str:
-    """Replace the UI's span markers with paper-style [1] citations and (confidence: N%) notes."""
-    return _MARKER.sub(_plain_marker, annotated)
+def extract_annotations(annotated: str) -> tuple[str, list[dict[str, Any]]]:
+    """Strip the span markers from an answer: (plain Markdown, [{"start", "end", "cite" | "confidence"}]).
+
+    Offsets are code point indexes into the returned text. A marker with no usable value keeps its text only.
+    """
+    parts: list[str] = []
+    annotations: list[dict[str, Any]] = []
+    length = 0  # code points written so far
+    last = 0
+    for m in _MARKER.finditer(annotated):
+        before, inner = annotated[last:m.start()], m.group(1)
+        parts += [before, inner]
+        length += len(before)
+        value = _marker_value(m.group(2), m.group(3))
+        if value is not None and inner:
+            annotations.append({"start": length, "end": length + len(inner), **value})
+        length += len(inner)
+        last = m.end()
+    parts.append(annotated[last:])
+    return "".join(parts), annotations
+
+
+def _apply_annotations(content: str, annotations: list[dict[str, Any]], render) -> str:
+    """`content` with each annotated span replaced by render(text, annotation); bad or overlapping spans skipped."""
+    out, pos = [], 0
+    for a in sorted(annotations, key=lambda a: a["start"]):
+        start, end = a.get("start"), a.get("end")
+        if not (isinstance(start, int) and isinstance(end, int) and pos <= start < end <= len(content)):
+            continue
+        out += [content[pos:start], render(content[start:end], a)]
+        pos = end
+    out.append(content[pos:])
+    return "".join(out)
+
+
+def _plain(text: str, a: dict[str, Any]) -> str:
+    if a.get("cite"):
+        return f"{text} [{', '.join(str(n) for n in a['cite'])}]"
+    if a.get("confidence") is not None:
+        return f"{text} (confidence: {a['confidence']}%)"
+    return text
+
+
+def _marker(text: str, a: dict[str, Any]) -> str:
+    if a.get("cite"):
+        return f"[{text}](cite:{','.join(str(n) for n in a['cite'])})"
+    if a.get("confidence") is not None:
+        return f"[{text}](conf:{a['confidence']})"
+    return text
+
+
+def plain_markdown(content: str, annotations: list[dict[str, Any]]) -> str:
+    """The answer with paper-style [1] citations and (confidence: N%) notes after its annotated spans."""
+    return _apply_annotations(content, annotations, _plain)
+
+
+def with_markers(content: str, annotations: list[dict[str, Any]]) -> str:
+    """The answer with Claude's span markers put back (mirrors withMarkers in frontend/src/citations.js)."""
+    return _apply_annotations(content, annotations, _marker)
 
 
 # ---- Source credibility (mirrors matchSource in frontend/src/sources.js) --------------------------------
@@ -158,8 +219,15 @@ def consulted(activity: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return found
 
 
-def export_turn(turn, sources: list[tuple[str, int]]) -> dict[str, Any]:
-    """One question and answer in the portable format. Levels reflect the Source list at export time."""
+def export_turn(
+    turn, annotated: str, references: list[dict[str, Any]], sources: list[tuple[str, int]]
+) -> dict[str, Any]:
+    """One question and answer in the portable format, stored in turns.metadata when the answer is saved.
+
+    `annotated` is the answer with Claude's span markers and without its References section, which was parsed
+    into `references` (split_references). Levels reflect the Source list when the answer was saved.
+    """
+    content, annotations = extract_annotations(annotated)
     return {
         "schema_version": SCHEMA_VERSION,
         "uuid": str(turn.uuid),
@@ -167,14 +235,13 @@ def export_turn(turn, sources: list[tuple[str, int]]) -> dict[str, Any]:
         "created_at": turn.created_at.isoformat().replace("+00:00", "Z"),
         "model": turn.model,
         "mode": turn.mode,
-        "content_markdown": plain_markdown(turn.content),
-        "references": with_levels(turn.references or [], sources),
+        "content": content,
+        "annotations": annotations,
+        "references": with_levels(references, sources),
         "conventions": CONVENTIONS,
         "status": turn.status,
         "error": turn.error,
         "consulted": consulted(turn.activity or []),
-        # Same answer with the UI's span markers, which record exactly which words each citation covers.
-        "content_annotated": turn.content,
         "id": turn.id,
         "conversation": {
             "uuid": str(turn.conversation.uuid),
@@ -182,6 +249,23 @@ def export_turn(turn, sources: list[tuple[str, int]]) -> dict[str, Any]:
             "title": turn.conversation.title,
         },
     }
+
+
+def upgrade_export(data: dict[str, Any]) -> dict[str, Any]:
+    """A stored schema_version 1 export as version 2, keeping its references and levels as saved."""
+    if data.get("schema_version", 1) >= 2:
+        return data
+    content, annotations = extract_annotations(data.get("content_annotated") or "")
+    upgraded = {}
+    for key, value in data.items():
+        if key == "content_markdown":
+            upgraded["content"], upgraded["annotations"] = content, annotations
+        elif key != "content_annotated":
+            upgraded[key] = value
+    upgraded.setdefault("content", content)
+    upgraded.setdefault("annotations", annotations)
+    upgraded["schema_version"], upgraded["conventions"] = 2, CONVENTIONS
+    return upgraded
 
 
 def _yaml_str(value: Any) -> str:
@@ -196,7 +280,8 @@ def export_markdown(data: dict[str, Any]) -> str:
         front.append(f"{key}: {_yaml_str(data[key])}")
     front.append("---")
 
-    parts = ["\n".join(front), "# Question", data["question"], "# Answer", data["content_markdown"] or "(no answer)"]
+    answer = plain_markdown(data["content"], data["annotations"])
+    parts = ["\n".join(front), "# Question", data["question"], "# Answer", answer or "(no answer)"]
     if data["error"]:
         parts.append(f"> Error: {data['error']}")
     if data["references"]:

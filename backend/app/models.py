@@ -16,7 +16,7 @@ class Conversation(Base):
     uuid: Mapped[UUID] = mapped_column(
         Uuid, unique=True, default=uuid4, server_default=text("gen_random_uuid()")
     )
-    title: Mapped[str] = mapped_column(String(200), default="New chat")
+    title: Mapped[str] = mapped_column(String(200), default="New conversation")
     model: Mapped[str] = mapped_column(String(100))
     # Claude Code session id, used to resume the agent's context on the next turn.
     claude_session_id: Mapped[str | None] = mapped_column(String(100))
@@ -45,14 +45,15 @@ class Turn(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     model: Mapped[str] = mapped_column(String(100))
     mode: Mapped[str] = mapped_column(String(20))  # "normal" | "research" (Ref on)
-    # The answer as Markdown with the UI's span markers ([text](cite:1) / [text](conf:85)),
-    # without its References section, which is parsed into `references`.
-    content: Mapped[str] = mapped_column(Text, default="")
-    # [{"n", "url", "title", "publisher", "level"}]; level is the Source list's rating when answered.
-    references: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     # Tool calls and results while answering: [{"type": "tool_use" | "tool_result", ...}]
     activity: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(20), default="running")  # running | complete | stopped | error
+    # The answer, stored once as the full export JSON (answers.export_turn) when it's saved, and served as-is by
+    # the export endpoints. The chat UI reads `content` (plain Markdown), `annotations` ([{"start", "end",
+    # "cite": [n, ...] | "confidence": N}], code point offsets into content) and `references` ([{"n", "url",
+    # "title", "publisher", "level"}], level being the Source list's rating when answered). NULL while running.
+    # `metadata` is reserved on SQLAlchemy models, hence the attribute name `metadata_`.
+    metadata_: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSON)
     error: Mapped[str | None] = mapped_column(Text)
     cost_usd: Mapped[float | None]
 

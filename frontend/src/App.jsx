@@ -21,7 +21,7 @@ export default function App() {
             onChange={(_, v) => navigate(`/${v}`)}
             sx={{ flex: 1, minHeight: 48, "& .MuiTab-root": { minHeight: 48 } }}
           >
-            <Tab value="chat" label="Chat" />
+            <Tab value="chat" label="Conversation" />
             <Tab value="source" label="Source" />
           </Tabs>
           <ThemeToggle />

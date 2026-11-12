@@ -72,8 +72,8 @@ export const newTurn = (question, { research, model }) => ({
   question,
   mode: research ? "research" : "normal",
   model,
-  content: "",
-  references: [],
+  content: "", // the streamed text, only until the server's copy (with `metadata`) replaces this turn
+  metadata: null,
   activity: [],
   status: "running",
   error: null,
@@ -113,18 +113,25 @@ export function applyEvent(turn, event) {
 export const turnExportUrl = (id, { format = "json", download = false } = {}) =>
   `/api/turns/${id}/export?format=${format}${download ? "&download=true" : ""}`;
 
-/** Copy an answer as Markdown for pasting into another LLM. */
-export async function copyTurnForLLM(id) {
-  const fetchText = async () => {
-    const res = await fetch(turnExportUrl(id, { format: "markdown" }));
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    return res.text();
-  };
+/** An answer's stored metadata (turns.metadata), fetched fresh from the database. */
+async function fetchMetadata(id) {
+  const res = await fetch(turnExportUrl(id));
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+async function copyText(getText) {
   // ClipboardItem accepts a promise, so Safari still counts the click as the user gesture after the fetch.
   if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
-    const blob = fetchText().then((text) => new Blob([text], { type: "text/plain" }));
+    const blob = getText().then((text) => new Blob([text], { type: "text/plain" }));
     await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
   } else {
-    await navigator.clipboard.writeText(await fetchText());
+    await navigator.clipboard.writeText(await getText());
   }
 }
+
+/** Copy an answer's whole metadata column as formatted JSON. */
+export const copyTurnMetadata = (id) => copyText(async () => JSON.stringify(await fetchMetadata(id), null, 2));
+
+/** Copy only an answer's Markdown (metadata.content) as text, for pasting into another LLM. */
+export const copyTurnContent = (id) => copyText(async () => (await fetchMetadata(id)).content ?? "");

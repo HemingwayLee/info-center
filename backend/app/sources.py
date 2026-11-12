@@ -46,8 +46,8 @@ DEFAULT_SOURCES = {
         "substack.com", "medium.com",
     ],
     4: [
-        "LINE", "WhatsApp", "reddit.com", "quora.com", "PTT (ptt.cc)", "threads.net", "x.com (Twitter)",
-        "facebook.com", "tiktok.com", "Content farms", "Viral social media posts",
+        "line.me", "lin.ee", "whatsapp.com", "wa.me", "reddit.com", "quora.com", "ptt.cc",
+        "pttweb.cc", "threads.net", "x.com", "twitter.com", "facebook.com", "tiktok.com",
     ],
 }
 

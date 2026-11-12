@@ -11,7 +11,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from app import models, schemas
-from app.answers import export_markdown, export_turn, split_references, with_levels
+from app.answers import SCHEMA_VERSION, export_markdown, export_turn, split_references, upgrade_export
 from app.claude import MODELS, research_prompt, run_turn
 from app.config import settings
 from app.db import Base, SessionLocal, engine, get_db
@@ -24,8 +24,69 @@ logger = logging.getLogger(__name__)
 async def lifespan(_: FastAPI):
     # Dev convenience: create tables on startup. Swap for Alembic migrations later.
     Base.metadata.create_all(bind=engine)
+    _migrate_turns()
+    _migrate_exports()
     seed_sources()
     yield
+
+
+def _migrate_turns() -> None:
+    """Bring an older turns table up to date. Idempotent; a no-op on an up-to-date table.
+
+    Older tables kept the answer in `content` and its references in `references` (an array) or `additional`
+    ({"references": [...]}). This adds `metadata`, fills it from those for saved answers, then drops them.
+    """
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE turns ADD COLUMN IF NOT EXISTS metadata JSON"))
+        columns = set(
+            conn.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name = 'turns'"
+                )
+            ).scalars()
+        )
+        old = [c for c in ("content", "additional", "references") if c in columns]
+        if not old:
+            return
+        refs_sql = (
+            "additional->'references'" if "additional" in columns else '"references"' if "references" in columns
+            else "NULL"
+        )
+        content_sql = "content" if "content" in columns else "''"
+        rows = conn.execute(
+            text(f"SELECT id, {content_sql}, {refs_sql} FROM turns WHERE metadata IS NULL AND status <> 'running'")
+        ).all()
+        if rows:
+            # Build each answer's metadata from its old columns and the ORM row for everything else.
+            with SessionLocal(bind=conn) as session:
+                sources = _sources(session)
+                for turn_id, content, references in rows:
+                    turn = session.get(models.Turn, turn_id)
+                    payload = export_turn(turn, content or "", references or [], sources)
+                    conn.execute(
+                        text("UPDATE turns SET metadata = CAST(:m AS JSON) WHERE id = :id"),
+                        {"m": json.dumps(payload), "id": turn_id},
+                    )
+        for column in old:
+            conn.execute(text(f'ALTER TABLE turns DROP COLUMN "{column}"'))
+        logger.info("Migrated turns: filled metadata for %d answers, dropped %s", len(rows), ", ".join(old))
+
+
+def _migrate_exports() -> None:
+    """Upgrade stored exports to the current schema_version (answers.upgrade_export). Idempotent."""
+    with SessionLocal() as session:
+        turns = session.scalars(
+            select(models.Turn).where(
+                models.Turn.metadata_.is_not(None),
+                text("COALESCE((metadata->>'schema_version')::int, 1) < :v").bindparams(v=SCHEMA_VERSION),
+            )
+        ).all()
+        for turn in turns:
+            turn.metadata_ = upgrade_export(turn.metadata_)
+        if turns:
+            session.commit()
+            logger.info("Upgraded %d stored exports to schema_version %d", len(turns), SCHEMA_VERSION)
 
 
 app = FastAPI(title="info-center API", lifespan=lifespan)
@@ -103,6 +164,14 @@ def update_conversation(
             .where(models.Conversation.id == conversation_id)
             .values(**data, updated_at=models.Conversation.updated_at)
         )
+        if "title" in data:
+            # Keep the chat title in each answer's stored export current.
+            for turn in conversation.turns:
+                if turn.metadata_ is not None:
+                    turn.metadata_ = {
+                        **turn.metadata_,
+                        "conversation": {**turn.metadata_["conversation"], "title": data["title"]},
+                    }
         db.commit()
         db.refresh(conversation)
     return conversation
@@ -151,7 +220,7 @@ class _Answer:
 def send_message(conversation_id: int, payload: schemas.ChatRequest, db: Session = Depends(get_db)):
     conversation = _get_conversation(db, conversation_id)
     if not conversation.turns:
-        conversation.title = payload.content.strip().splitlines()[0][:80] or "New chat"
+        conversation.title = payload.content.strip().splitlines()[0][:80] or "New conversation"
 
     sources = _sources(db)
     research = None
@@ -196,16 +265,15 @@ def send_message(conversation_id: int, payload: schemas.ChatRequest, db: Session
                 yield _sse({"type": "error", "text": str(exc)})
         finally:
             # Runs on completion, error, and client abort (Stop button), so partial answers are kept.
-            content, references = split_references(answer.text)
+            annotated, references = split_references(answer.text)
             with SessionLocal() as session:
                 row = session.get(models.Turn, turn_id)
                 if row is not None:
-                    row.content = content
-                    row.references = with_levels(references, sources)
                     row.activity = answer.activity
                     row.error = "\n".join(answer.errors) or None
                     row.status = "error" if answer.errors else "complete" if finished else "stopped"
                     row.cost_usd = cost
+                    row.metadata_ = export_turn(row, annotated, references, sources)
                     convo = session.get(models.Conversation, conversation_id)
                     # Only resume from sessions that actually produced output; a turn that failed
                     # before Claude responded may not have a transcript on disk.
@@ -238,6 +306,13 @@ def _find(db: Session, model, ref: str, label: str):
     return row
 
 
+def _stored_export(turn: models.Turn) -> dict:
+    """The export JSON saved in turns.metadata when the answer finished."""
+    if turn.metadata_ is None:
+        raise HTTPException(409, "This answer is still being written; export it once it finishes")
+    return turn.metadata_
+
+
 @app.get("/api/turns/{turn_ref}/export")
 def export_turn_endpoint(
     turn_ref: str,
@@ -247,7 +322,7 @@ def export_turn_endpoint(
 ):
     """One question and answer (by id or UUID) in the portable format: JSON, or Markdown for another LLM."""
     turn = _find(db, models.Turn, turn_ref, "Answer")
-    data = export_turn(turn, _sources(db))
+    data = _stored_export(turn)
     disposition = {"Content-Disposition": f'attachment; filename="answer-{turn.uuid}.{"json" if format == "json" else "md"}"'}
     headers = disposition if download else {}
     if format == "markdown":
@@ -259,5 +334,5 @@ def export_turn_endpoint(
 def export_conversation(conversation_ref: str, db: Session = Depends(get_db)):
     """Every answer in a chat (by id or UUID), oldest first, in the same format as /api/turns/{id}/export."""
     conversation = _find(db, models.Conversation, conversation_ref, "Conversation")
-    sources = _sources(db)
-    return [export_turn(turn, sources) for turn in conversation.turns]
+    # Answers still being written have no export yet.
+    return [turn.metadata_ for turn in conversation.turns if turn.metadata_ is not None]

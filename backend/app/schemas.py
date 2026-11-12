@@ -35,8 +35,8 @@ class TurnRead(BaseModel):
     created_at: datetime
     model: str
     mode: str
-    content: str
-    references: list[dict[str, Any]]
+    # The stored export JSON (see models.Turn.metadata_); None while the answer is running.
+    metadata: dict[str, Any] | None = Field(validation_alias="metadata_")
     activity: list[dict[str, Any]]
     status: str
     error: str | None

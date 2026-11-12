@@ -2,10 +2,10 @@ import { useMemo, useState } from "react";
 import { Alert, Box, Button, Stack, Tooltip, Typography } from "@mui/material";
 import CheckIcon from "@mui/icons-material/Check";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
-import FileDownloadOutlinedIcon from "@mui/icons-material/FileDownloadOutlined";
+import DataObjectIcon from "@mui/icons-material/DataObject";
 import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
-import { copyTurnForLLM, turnExportUrl } from "../api";
-import { splitReferences } from "../citations";
+import { copyTurnContent, copyTurnMetadata } from "../api";
+import { splitReferences, withMarkers } from "../citations";
 import { hostnameOf, matchSource, useSources } from "../sources";
 import Markdown from "./Markdown";
 import References from "./References";
@@ -13,12 +13,19 @@ import ToolCall from "./ToolCall";
 
 /**
  * The answer body and its references, each resolved to a credibility level from the current Source list.
- * Saved turns have structured references; while streaming they're still a section at the end of the text.
+ * Saved turns have them in `metadata` (the stored export), with the citation and confidence spans as
+ * `annotations` that are turned back into markers for <Markdown>; while streaming, the text still has its markers
+ * and a references section at the end.
  */
 function useAnswer(turn, sources) {
   return useMemo(() => {
     const { body, refs: list } =
-      turn.id != null ? { body: turn.content, refs: turn.references } : splitReferences(turn.content);
+      turn.id != null
+        ? {
+            body: withMarkers(turn.metadata?.content ?? "", turn.metadata?.annotations),
+            refs: turn.metadata?.references ?? [],
+          }
+        : splitReferences(turn.content);
     const refs = new Map();
     for (const r of list) {
       const source = matchSource(r.url, sources);
@@ -59,12 +66,13 @@ function Question({ text, research }) {
   );
 }
 
-function ExportActions({ turnId }) {
+/** A small text button that copies something to the clipboard and briefly shows the result. */
+function CopyButton({ label, tooltip, icon, onCopy }) {
   const [copied, setCopied] = useState(null); // null | "ok" | error message
 
   const copy = async () => {
     try {
-      await copyTurnForLLM(turnId);
+      await onCopy();
       setCopied("ok");
     } catch (e) {
       setCopied(`Couldn't copy: ${e.message}`);
@@ -72,29 +80,16 @@ function ExportActions({ turnId }) {
     setTimeout(() => setCopied(null), 2000);
   };
 
-  const buttonSx = { color: "text.secondary", textTransform: "none", minWidth: 0, px: 1 };
   return (
-    <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
-      <Tooltip title="Copy question, answer and references as Markdown, ready to paste into another LLM">
+    <>
+      <Tooltip title={tooltip}>
         <Button
           size="small"
           onClick={copy}
-          startIcon={copied === "ok" ? <CheckIcon /> : <ContentCopyIcon />}
-          sx={buttonSx}
+          startIcon={copied === "ok" ? <CheckIcon /> : icon}
+          sx={{ color: "text.secondary", textTransform: "none", minWidth: 0, px: 1 }}
         >
-          {copied === "ok" ? "Copied" : "Copy for LLM"}
-        </Button>
-      </Tooltip>
-      <Tooltip title="Download this answer as JSON (question, answer, references, sources consulted)">
-        <Button
-          size="small"
-          component="a"
-          href={turnExportUrl(turnId, { download: true })}
-          download
-          startIcon={<FileDownloadOutlinedIcon />}
-          sx={buttonSx}
-        >
-          Export
+          {copied === "ok" ? "Copied" : label}
         </Button>
       </Tooltip>
       {copied && copied !== "ok" && (
@@ -102,6 +97,25 @@ function ExportActions({ turnId }) {
           {copied}
         </Typography>
       )}
+    </>
+  );
+}
+
+function ExportActions({ turnId }) {
+  return (
+    <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
+      <CopyButton
+        label="Copy content for LLM"
+        tooltip="Copy the answer's Markdown (metadata.content) as text, ready to paste into another LLM"
+        icon={<ContentCopyIcon />}
+        onCopy={() => copyTurnContent(turnId)}
+      />
+      <CopyButton
+        label="Copy json metadata"
+        tooltip="Copy this answer's stored metadata as JSON (question, answer, annotations, references, sources consulted)"
+        icon={<DataObjectIcon />}
+        onCopy={() => copyTurnMetadata(turnId)}
+      />
     </Stack>
   );
 }

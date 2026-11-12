@@ -43,7 +43,7 @@ function TitleEditor({ initial, onSave, onCancel }) {
           onCancel();
         }
       }}
-      inputProps={{ maxLength: MAX_TITLE, "aria-label": "Chat title" }}
+      inputProps={{ maxLength: MAX_TITLE, "aria-label": "Conversation title" }}
       sx={{
         flex: 1,
         fontSize: 14,
@@ -64,7 +64,7 @@ export default function Sidebar({ conversations, currentId, onSelect, onNew, onD
   return (
     <Stack sx={{ height: "100%", p: 1.5 }}>
       <Button variant="outlined" startIcon={<AddIcon />} onClick={onNew} sx={{ mb: 1 }}>
-        New chat
+        New conversation
       </Button>
 
       <Box sx={{ flex: 1, overflowY: "auto", mx: -0.5 }}>
@@ -105,7 +105,7 @@ export default function Sidebar({ conversations, currentId, onSelect, onNew, onD
                       <Tooltip title="Rename">
                         <IconButton
                           size="small"
-                          aria-label="Rename chat"
+                          aria-label="Rename conversation"
                           onClick={(e) => {
                             e.stopPropagation();
                             setEditingId(c.id);
@@ -117,7 +117,7 @@ export default function Sidebar({ conversations, currentId, onSelect, onNew, onD
                       <Tooltip title="Delete">
                         <IconButton
                           size="small"
-                          aria-label="Delete chat"
+                          aria-label="Delete conversation"
                           onClick={(e) => {
                             e.stopPropagation();
                             onDelete(c.id);
@@ -135,7 +135,7 @@ export default function Sidebar({ conversations, currentId, onSelect, onNew, onD
         </List>
         {conversations.length === 0 && (
           <Typography variant="body2" color="text.secondary" sx={{ px: 1 }}>
-            No chats yet.
+            No conversations yet.
           </Typography>
         )}
       </Box>

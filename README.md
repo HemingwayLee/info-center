@@ -27,17 +27,22 @@ Credentials, set one in `.env`:
 | API      | http://localhost:8765/api    |
 | API docs | http://localhost:8765/docs   |
 | Postgres | localhost:5432 (app/app/app) |
+| pgweb    | http://localhost:8081        |
 
 ## How it works
 
 - `POST /api/conversations/{id}/messages` runs one Claude Code turn and streams it back as server-sent events
   (text deltas, tool calls, tool results, final cost).
-- Each question and answer is one row in `turns` (Postgres): question, model, mode (normal / research), the answer
-  as Markdown, structured references, the tool activity, and status. Each conversation keeps its Claude Code
+- Each question and answer is one row in `turns` (Postgres): question, model, mode (normal / research), the tool
+  activity, status, and `metadata`: the answer as plain Markdown, its citation and confidence spans
+  (`annotations`, as code point offsets) and its structured references, stored as the full export JSON. Each conversation keeps its Claude Code
   session id, and the next message resumes that session. Session transcripts live in the `claude-config` volume.
-- Export an answer for other LLMs or tools: `GET /api/turns/{id}/export` (JSON, `schema_version` 1) or
+- Export an answer for other LLMs or tools: `GET /api/turns/{id}/export` (JSON, `schema_version` 2) or
   `?format=markdown`, and a whole chat with `GET /api/conversations/{id}/export`. Each answer in the UI has
-  **Copy for LLM** (Markdown to clipboard) and **Export** (JSON download). Format details: `backend/app/answers.py`.
+  **Copy content for LLM** (the answer's Markdown, `metadata.content`, as text) and **Copy json metadata** (the
+  whole `metadata` column as JSON), both to the clipboard. The export JSON is built once when the
+  answer is saved and stored in `turns.metadata`; the endpoints and the chat UI read that stored copy, so
+  reference levels are the Source list's ratings at answer time. Format details: `backend/app/answers.py`.
 - Claude Code works in `./workspace` (mounted at `/workspace` in the backend container).
 - Tools are pre-approved and anything else is denied (`permission_mode="dontAsk"`). Default set: Read, Write,
   Edit, Glob, Grep, Bash, WebSearch, WebFetch, TodoWrite. Override with `CLAUDE_ALLOWED_TOOLS='["Read","Glob","Grep"]'`.

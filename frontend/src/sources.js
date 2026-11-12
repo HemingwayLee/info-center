@@ -31,7 +31,7 @@ export function hostnameOf(url) {
  * How a source name matches hostnames:
  *   ".gov"          suffix: whitehouse.gov, data.gov.tw
  *   "bbc.com"       domain and its subdomains: bbc.com, news.bbc.com
- *   "WhatsApp"      a hostname label: whatsapp.com, chat.whatsapp.com
+ *   "Twitter"       a hostname label: twitter.com, mobile.twitter.com
  *   "PTT (ptt.cc)"  the domain, plus the other words as labels
  * Multi-word names without a domain ("Content farms") match nothing.
  */

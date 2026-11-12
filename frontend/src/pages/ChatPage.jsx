@@ -102,7 +102,7 @@ export default function ChatPage({ active = true }) {
       await api.updateConversation(id, { title });
     } catch (e) {
       setConversations(previous);
-      setError(`Couldn't rename the chat: ${e.message}`);
+      setError(`Couldn't rename the conversation: ${e.message}`);
     }
   };
 
