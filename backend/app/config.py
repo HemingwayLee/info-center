@@ -3,7 +3,10 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://app:app@localhost:5432/app"
-    cors_origins: list[str] = ["http://localhost:5678"]
+    # "null" is the origin of an HTML file opened from disk (e.g. a local MCP test client).
+    cors_origins: list[str] = ["http://localhost:5678", "null"]
+    # Also allow any port on localhost (and *.localhost), 127.0.0.1, 0.0.0.0 and [::1], for local test pages.
+    cors_origin_regex: str | None = r"^https?://(([^/:]+\.)?localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?$"
 
     # Claude Code (Agent SDK) settings
     claude_workspace: str = "/workspace"
