@@ -26,5 +26,11 @@ class Settings(BaseSettings):
     # How other systems reach this backend; shown in the Integrations tab and the /api/v1 welcome.
     public_base_url: str = "http://localhost:8765"
 
+    # Papers tab: tools Claude may use to answer questions about a paper (read its files, look things up online).
+    paper_allowed_tools: list[str] = ["Read", "Grep", "Glob", "WebSearch", "WebFetch"]
+    # A paper up to this many characters of Markdown is given to Claude in full with the chat's first question;
+    # a longer one is read from its file as needed.
+    paper_inline_chars: int = 300_000
+
 
 settings = Settings()

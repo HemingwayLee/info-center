@@ -159,3 +159,33 @@ class ResearchSummary(BaseModel):
     question: str
     created_at: datetime
     status: str
+
+
+# ---- Papers (the Papers tab) ----------------------------------------------------------------------------------
+
+
+class PaperRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    uuid: UUID
+    title: str
+    filename: str
+    pages: int
+    size_bytes: int
+    created_at: datetime
+
+
+class PaperSummary(PaperRead):
+    conversation_id: int  # the paper's chat; use the /api/conversations/{id} endpoints with it
+    questions: int  # questions asked in that chat
+
+
+class PaperDetail(PaperSummary):
+    markdown: str
+
+
+class PaperUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+
+    _strip = field_validator("title")(_strip_name)

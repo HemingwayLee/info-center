@@ -18,7 +18,7 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 const MAX_TITLE = 200; // matches the backend's ConversationUpdate limit
 
 /** Inline title editor: Enter or clicking away saves, Esc cancels. */
-function TitleEditor({ initial, onSave, onCancel }) {
+export function TitleEditor({ initial, onSave, onCancel, label = "Conversation title" }) {
   const [value, setValue] = useState(initial);
   const save = () => {
     const title = value.trim();
@@ -43,7 +43,7 @@ function TitleEditor({ initial, onSave, onCancel }) {
           onCancel();
         }
       }}
-      inputProps={{ maxLength: MAX_TITLE, "aria-label": "Conversation title" }}
+      inputProps={{ maxLength: MAX_TITLE, "aria-label": label }}
       sx={{
         flex: 1,
         fontSize: 14,

@@ -1,12 +1,37 @@
+import { createContext, useContext } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Box, Link } from "@mui/material";
 import { citeNumbers } from "../citations";
 import { levelTextSx } from "../sources";
 
-// Our own link targets: "cite:1,2" (sourced text) and "conf:85" (Claude's own statement, 85% confident).
-const isMarker = (url) => url.startsWith("cite:") || url.startsWith("conf:");
+// Our own link targets: "cite:1,2" (sourced text), "conf:85" (Claude's own statement, 85% confident) and
+// "page:4" (page 4 of the paper a Papers-tab chat is about).
+const isMarker = (url) => url.startsWith("cite:") || url.startsWith("conf:") || url.startsWith("page:");
+
+/** Opens the paper at a page, for "page:N" links: provided by the Papers tab, null elsewhere. */
+export const PageLinkContext = createContext(null);
+
+/** "[p. 4](page:4)": a button that opens the paper's PDF at that page; plain text outside the Papers tab. */
+function PageLink({ page, children }) {
+  const openPage = useContext(PageLinkContext);
+  if (!openPage || !Number.isInteger(page) || page < 1) return <span>{children}</span>;
+  return (
+    <Link
+      component="button"
+      type="button"
+      onClick={() => openPage(page)}
+      title={`Open the PDF at page ${page}`}
+      underline="hover"
+      sx={{ font: "inherit", verticalAlign: "baseline", fontWeight: 500 }}
+    >
+      {children}
+    </Link>
+  );
+}
 const keepMarkerUrls = (url) => (isMarker(url) ? url : defaultUrlTransform(url));
+// A relative link: no scheme ("https:", "data:"…), not from the site root, not a fragment.
+const isRelative = (url) => !/^[a-z][a-z\d+.-]*:/i.test(url) && !url.startsWith("/") && !url.startsWith("#");
 
 /** Claude's own statement: normal text color, followed by its confidence as a small badge. */
 function Confident({ value, children }) {
@@ -88,7 +113,14 @@ function Cited({ numbers, refs, children }) {
   );
 }
 
-export default function Markdown({ children, refs = new Map() }) {
+/**
+ * `imageBase` resolves relative image links, e.g. "/api/papers/1/" turns images/fig.png into
+ * /api/papers/1/images/fig.png (a paper's Markdown links its images next to it).
+ */
+export default function Markdown({ children, refs = new Map(), imageBase }) {
+  const transform = (url, key) =>
+    imageBase && key === "src" && isRelative(url) ? defaultUrlTransform(imageBase + url) : keepMarkerUrls(url);
+
   return (
     <Box
       sx={{
@@ -113,11 +145,13 @@ export default function Markdown({ children, refs = new Map() }) {
         "& table": { borderCollapse: "collapse", my: 1 },
         "& th, & td": { border: 1, borderColor: "divider", px: 1, py: 0.5 },
         "& blockquote": { borderLeft: 3, borderColor: "divider", pl: 2, ml: 0, color: "text.secondary" },
+        // Figures: never wider than the text; a white backdrop, since most are drawn for white paper.
+        "& img": { display: "block", maxWidth: "100%", height: "auto", my: 1.5, mx: "auto", bgcolor: "#fff", borderRadius: 0.5 },
       }}
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        urlTransform={keepMarkerUrls}
+        urlTransform={transform}
         components={{
           a: ({ href = "", children: text, node: _node, ...props }) =>
             href.startsWith("cite:") ? (
@@ -126,6 +160,8 @@ export default function Markdown({ children, refs = new Map() }) {
               </Cited>
             ) : href.startsWith("conf:") ? (
               <Confident value={href.slice("conf:".length)}>{text}</Confident>
+            ) : href.startsWith("page:") ? (
+              <PageLink page={Number.parseInt(href.slice("page:".length), 10)}>{text}</PageLink>
             ) : (
               <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
                 {text}

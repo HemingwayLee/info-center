@@ -40,6 +40,25 @@ export const api = {
     request(`/integrations/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   rotateIntegrationKey: (id) => request(`/integrations/${id}/rotate-key`, { method: "POST" }),
   deleteIntegration: (id) => request(`/integrations/${id}`, { method: "DELETE" }),
+
+  // Multipart upload: no JSON Content-Type, so the browser sets the form boundary.
+  pdfToMarkdown: (file) => {
+    const body = new FormData();
+    body.append("file", file);
+    return request("/pdf/markdown", { method: "POST", body, headers: {} });
+  },
+
+  // Papers tab: each paper has a chat (conversation_id) that uses the conversation endpoints above.
+  listPapers: () => request("/papers"),
+  getPaper: (id) => request(`/papers/${id}`),
+  uploadPaper: (file) => {
+    const body = new FormData();
+    body.append("file", file);
+    return request("/papers", { method: "POST", body, headers: {} });
+  },
+  renamePaper: (id, title) => request(`/papers/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
+  deletePaper: (id) => request(`/papers/${id}`, { method: "DELETE" }),
+  clearPaperChat: (id) => request(`/papers/${id}/clear-chat`, { method: "POST" }),
 };
 
 /** Read a server-sent event stream, calling onEvent for each event; resolves when the stream ends. */

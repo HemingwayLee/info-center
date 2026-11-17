@@ -55,6 +55,33 @@ Credentials, set one in `.env`:
   the answer (`POST /api/turns/{id}/cancel`); the partial reply is kept. Answers cut off by a server restart are
   marked as errors on the next start.
 
+## Papers
+
+The **Papers** tab is a library of PDFs you can ask Claude about. The left side lists the papers: add one (up to
+50 MB) with the button or by dropping it there, and rename or delete it. Each paper has its own chat.
+**Show paper** opens a floating window, which you can move and resize, showing the original PDF or the Markdown
+it was converted to (with copy and `.md` download). Answers cite pages as links such as "p. 4", and clicking one
+opens the PDF at that page.
+
+- On upload, [PyMuPDF4LLM](https://github.com/pymupdf/pymupdf4llm) converts the PDF to Markdown locally, without
+  Claude. Both are saved in the workspace, in `workspace/papers/<uuid>/paper.pdf` and `paper.md` (with
+  `<!-- page N -->` markers for citing pages), and the Markdown is also kept in the `papers` table.
+- The PDF's images (figures, diagrams) are saved as PNGs in `workspace/papers/<uuid>/images/` and linked from the
+  Markdown as `images/<file>`. The Markdown view shows them inline (served by `GET /api/papers/{id}/images/{name}`),
+  and copied or downloaded Markdown links them by full URL. Claude can open them to answer questions about a figure.
+  Papers added before this are re-converted once, in the background, when the backend starts. Equations
+  usually come out as text, not images.
+- A paper's chat is an ordinary conversation (`conversations.paper_id`) that isn't shown on the Conversation tab.
+  Claude gets the paper's full text with the chat's first question; later questions resume that session.
+  Papers longer than `PAPER_INLINE_CHARS` (default 300,000) are read from `paper.md` as needed instead. Claude
+  can also read the PDF itself for figures and equations. Tools: `PAPER_ALLOWED_TOOLS` (default Read, Grep,
+  Glob, WebSearch, WebFetch), so there's no shell and no file writing. **Clear chat** starts over.
+- API: `GET/POST /api/papers` (upload: multipart field `file`), `GET/PATCH/DELETE /api/papers/{id}`,
+  `GET /api/papers/{id}/pdf`, `POST /api/papers/{id}/clear-chat`. Ask questions with
+  `POST /api/conversations/{conversation_id}/messages`. The conversion alone is still at `POST /api/pdf/markdown`,
+  which returns `{filename, pages, markdown}`.
+- Scanned PDFs without a text layer give little or no text. PyMuPDF and PyMuPDF4LLM are AGPL-3.0 licensed.
+
 ## Integrations (MCP and the public API)
 
 Other systems can use this app for research. Create an **integration** on the Integrations tab: it gets an API

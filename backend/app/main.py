@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from typing import Literal
@@ -10,13 +11,15 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session, selectinload
 
-from app import jobs, mcp_server, models, schemas
+from app import jobs, mcp_server, models, papers, schemas
 from app.answers import SCHEMA_VERSION, export_markdown, export_turn, upgrade_export
 from app.api_v1 import api as api_v1
 from app.claude import MODELS
 from app.config import settings
 from app.db import Base, SessionLocal, engine, get_db
 from app.integrations import router as integrations_router
+from app.papers import router as papers_router
+from app.pdf import router as pdf_router
 from app.sources import router as sources_router, seed_sources
 
 logger = logging.getLogger(__name__)
@@ -32,6 +35,8 @@ async def lifespan(_: FastAPI):
     seed_sources()
     if count := jobs.recover_interrupted():
         logger.warning("Marked %d answers interrupted by a restart as errors", count)
+    # Papers added before image extraction: re-convert them in the background, without delaying startup.
+    asyncio.get_running_loop().run_in_executor(None, papers.backfill_images)
     async with mcp_server.server.session_manager.run():
         yield
         await jobs.cancel_all()  # save partial answers of anything still running
@@ -108,6 +113,14 @@ def _migrate_conversations() -> None:
         conn.execute(
             text("CREATE INDEX IF NOT EXISTS ix_conversations_integration_id ON conversations (integration_id)")
         )
+        # Papers tab (added later still): a paper's chat.
+        conn.execute(
+            text(
+                "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS paper_id INTEGER "
+                "REFERENCES papers(id) ON DELETE CASCADE"
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversations_paper_id ON conversations (paper_id)"))
 
 
 # Built at import so its session manager exists when the lifespan starts it.
@@ -126,6 +139,8 @@ app.add_middleware(
 
 app.include_router(sources_router)
 app.include_router(integrations_router)
+app.include_router(pdf_router)
+app.include_router(papers_router)
 app.mount("/api/v1", api_v1)  # public API for other systems, with its own docs at /api/v1/docs
 
 
@@ -163,6 +178,7 @@ def list_conversations(db: Session = Depends(get_db)):
     stmt = (
         select(models.Conversation)
         .options(selectinload(models.Conversation.integration))
+        .where(models.Conversation.paper_id.is_(None))  # paper chats live on the Papers tab
         .order_by(models.Conversation.updated_at.desc())
     )
     return db.scalars(stmt).all()
@@ -211,6 +227,8 @@ def update_conversation(
 @app.delete("/api/conversations/{conversation_id}", status_code=204)
 async def delete_conversation(conversation_id: int, db: Session = Depends(get_db)):
     conversation = _get_conversation(db, conversation_id)
+    if conversation.paper_id is not None:
+        raise HTTPException(409, "This is a paper's chat: delete the paper, or clear its chat, on the Papers tab")
     for turn in conversation.turns:  # stop an answer still being written; there's nowhere to save it
         if turn.status == "running":
             jobs.cancel(turn.id)
@@ -246,7 +264,14 @@ async def send_message(conversation_id: int, payload: schemas.ChatRequest, db: S
     """Ask a question in a chat and stream the answer. The first event is {"type": "turn", "turn_id"}."""
     conversation = _get_conversation(db, conversation_id)
     try:
-        turn = jobs.start_turn(db, conversation, payload.content, payload.research)
+        if conversation.paper is not None:
+            # Questions about a paper (Papers tab): Claude gets the paper and tools to read it, no shell.
+            system, prompt = papers.chat_context(conversation.paper, conversation, payload.content)
+            turn = jobs.start_turn(
+                db, conversation, payload.content, payload.research, settings.paper_allowed_tools, system, prompt
+            )
+        else:
+            turn = jobs.start_turn(db, conversation, payload.content, payload.research)
     except jobs.Busy as exc:
         raise HTTPException(409, str(exc)) from None
     return _event_stream(turn.id)

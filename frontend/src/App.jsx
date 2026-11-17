@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router"
 import ThemeToggle from "./components/ThemeToggle";
 import ChatPage from "./pages/ChatPage";
 import IntegrationsPage from "./pages/IntegrationsPage";
+import PapersPage from "./pages/PapersPage";
 import SourcePage from "./pages/SourcePage";
 
 export default function App() {
@@ -12,7 +13,9 @@ export default function App() {
     ? "source"
     : location.pathname.startsWith("/integrations")
       ? "integrations"
-      : "chat";
+      : location.pathname.startsWith("/papers")
+        ? "papers"
+        : "chat";
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100dvh" }}>
@@ -29,6 +32,7 @@ export default function App() {
             <Tab value="chat" label="Conversation" />
             <Tab value="source" label="Source" />
             <Tab value="integrations" label="Integrations" />
+            <Tab value="papers" label="Papers" />
           </Tabs>
           <ThemeToggle />
         </Toolbar>
@@ -39,11 +43,18 @@ export default function App() {
         <ChatPage active={section === "chat"} />
       </Box>
 
+      {/* Also kept mounted, so uploads and answers in progress survive switching tabs. */}
+      <Box sx={{ display: section === "papers" ? "flex" : "none", flex: 1, minHeight: 0 }}>
+        <PapersPage active={section === "papers"} />
+      </Box>
+
       <Routes>
         <Route path="/" element={<Navigate to="/chat" replace />} />
         <Route path="/chat" element={null} />
         <Route path="/source" element={<SourcePage />} />
         <Route path="/integrations" element={<IntegrationsPage />} />
+        <Route path="/papers" element={null} />
+        <Route path="/pdf" element={<Navigate to="/papers" replace />} />
         <Route path="*" element={<Navigate to="/chat" replace />} />
       </Routes>
     </Box>

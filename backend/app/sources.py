@@ -31,11 +31,29 @@ LEVELS = [
 ]
 LEVEL_IDS = {lv["level"] for lv in LEVELS}
 
+# Machine learning papers: preprints (arXiv), reviewed submissions (OpenReview), and the proceedings and journals
+# of the main venues. A name matches its subdomains too (neurips.cc covers proceedings.neurips.cc).
+ML_PAPER_SOURCES = [
+    "arxiv.org",  # preprints, not peer-reviewed
+    "openreview.net",  # ICLR, NeurIPS, TMLR submissions and reviews (rejected papers too)
+    "neurips.cc",  # NeurIPS proceedings
+    "proceedings.mlr.press",  # PMLR: ICML, AISTATS, COLT, CoRL, …
+    "icml.cc",
+    "iclr.cc",
+    "jmlr.org",  # JMLR and TMLR
+    "aclanthology.org",  # ACL, EMNLP, NAACL, TACL
+    "openaccess.thecvf.com",  # CVPR, ICCV, WACV
+    "ecva.net",  # ECCV
+    "ojs.aaai.org",  # AAAI
+    "ijcai.org",
+    "distill.pub",
+]
+
 # Inserted once, when the table is empty.
 DEFAULT_SOURCES = {
     1: [
         ".gov", ".edu", ".org", "nature.com", "science.org", "thelancet.com", "nejm.org",
-        "cell.com", "pubmed.ncbi.nlm.nih.gov", "who.int",
+        "cell.com", "pubmed.ncbi.nlm.nih.gov", "who.int", *ML_PAPER_SOURCES,
     ],
     2: [
         "bbc.com", "nytimes.com", "reuters.com", "apnews.com", "theguardian.com", "washingtonpost.com",
@@ -57,6 +75,7 @@ router = APIRouter(prefix="/api/sources", tags=["sources"])
 def seed_sources() -> None:
     with SessionLocal() as db:
         if db.scalar(select(func.count()).select_from(models.Source)):
+            _add_ml_paper_sources(db)
             return
         db.add_all(
             models.Source(name=name, level=level)
@@ -64,6 +83,18 @@ def seed_sources() -> None:
             for name in names
         )
         db.commit()
+
+
+def _add_ml_paper_sources(db: Session) -> None:
+    """Add ML_PAPER_SOURCES to Lv1 of a table seeded before they existed.
+
+    Only when none of them is there yet, so deleting or moving some of them in the Source tab sticks.
+    """
+    names = [n.lower() for n in ML_PAPER_SOURCES]
+    if db.scalar(select(func.count()).select_from(models.Source).where(func.lower(models.Source.name).in_(names))):
+        return
+    db.add_all(models.Source(name=name, level=1) for name in ML_PAPER_SOURCES)
+    db.commit()
 
 
 def _check_level(level: int) -> None:

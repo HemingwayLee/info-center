@@ -95,11 +95,18 @@ def start_turn(
     question: str,
     research: bool,
     allowed_tools: list[str] | None = None,
+    system_extra: str | None = None,
+    prompt: str | None = None,
 ) -> models.Turn:
-    """Save the question and start answering it in the background. Returns the saved turn (status "running")."""
+    """Save the question and start answering it in the background. Returns the saved turn (status "running").
+
+    `system_extra` is added to Claude's system prompt (e.g. which paper a Papers-tab chat is about), and `prompt`
+    is what Claude gets instead of `question` (e.g. the question with the paper's text); the saved turn and the
+    UI show `question` either way.
+    """
     if any(t.status == "running" for t in conversation.turns):
         raise Busy("This chat is still answering an earlier question")
-    if not conversation.turns:
+    if not conversation.turns and conversation.paper_id is None:  # a paper's chat keeps the paper's title
         conversation.title = question.strip().splitlines()[0][:80] or "New conversation"
 
     sources = _sources(db)
@@ -109,6 +116,7 @@ def start_turn(
         for name, level in sources:
             by_level.setdefault(level, []).append(name)
         research_text = research_prompt(by_level)
+    extra = "\n\n".join(part for part in (system_extra, research_text) if part) or None
 
     # Saved before Claude runs, so the question is kept even if the answer fails.
     turn = models.Turn(
@@ -124,8 +132,8 @@ def start_turn(
     _jobs[turn.id] = job
     job.publish({"type": "turn", "turn_id": turn.id})
     job.task = asyncio.get_running_loop().create_task(
-        _run(job, conversation.id, question, conversation.model, conversation.claude_session_id,
-             research_text, allowed_tools, sources)
+        _run(job, conversation.id, prompt or question, conversation.model, conversation.claude_session_id,
+             extra, allowed_tools, sources)
     )
     return turn
 

@@ -7,7 +7,8 @@ import StopIcon from "@mui/icons-material/Stop";
 /**
  * Message box. `history` is previously sent prompts, newest first: Up on the first line recalls an older
  * one, Down on the last line a newer one, and going past the newest restores what you were typing.
- * `research` / `onResearchChange` drive the Ref toggle (answer with cited sources).
+ * `research` / `onResearchChange` drive the Ref toggle (answer with cited sources); without onResearchChange
+ * there's no toggle.
  */
 export default function Composer({
   onSend,
@@ -17,6 +18,7 @@ export default function Composer({
   history = [],
   research = false,
   onResearchChange,
+  placeholder = "Send a message to Claude Code",
 }) {
   const [value, setValue] = useState("");
   const [historyIndex, setHistoryIndex] = useState(-1); // -1: editing the draft, not browsing history
@@ -82,12 +84,13 @@ export default function Composer({
         maxRows={10}
         autoFocus={autoFocus}
         inputRef={inputRef}
-        placeholder="Send a message to Claude Code"
+        placeholder={placeholder}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={onKeyDown}
         sx={{ flex: 1, py: 0.75 }}
       />
+      {onResearchChange && (
       <Tooltip
         title={
           research
@@ -120,6 +123,7 @@ export default function Composer({
           Ref
         </ToggleButton>
       </Tooltip>
+      )}
       {streaming ? (
         <Tooltip title="Stop">
           <IconButton onClick={onStop} sx={{ bgcolor: "action.selected" }}>

@@ -31,6 +31,31 @@ class Integration(Base):
     conversations: Mapped[list["Conversation"]] = relationship(back_populates="integration")
 
 
+class Paper(Base):
+    """A PDF on the Papers tab: its Markdown, and a chat for questions about it.
+
+    The files live in the Claude workspace (app/papers.py: papers/<uuid>/paper.pdf and paper.md), so Claude can
+    read them while answering.
+    """
+
+    __tablename__ = "papers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uuid: Mapped[UUID] = mapped_column(
+        Uuid, unique=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    title: Mapped[str] = mapped_column(String(300))
+    filename: Mapped[str] = mapped_column(String(300))
+    pages: Mapped[int] = mapped_column(Integer)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    markdown: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    conversations: Mapped[list["Conversation"]] = relationship(
+        back_populates="paper", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
 
@@ -47,6 +72,8 @@ class Conversation(Base):
     integration_id: Mapped[int | None] = mapped_column(
         ForeignKey("integrations.id", ondelete="SET NULL"), index=True
     )
+    # The paper this chat asks about (Papers tab); None for ordinary chats. Paper chats aren't in the chat list.
+    paper_id: Mapped[int | None] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -56,6 +83,7 @@ class Conversation(Base):
         back_populates="conversation", cascade="all, delete-orphan", order_by="Turn.id"
     )
     integration: Mapped[Integration | None] = relationship(back_populates="conversations")
+    paper: Mapped[Paper | None] = relationship(back_populates="conversations")
 
     @property
     def integration_name(self) -> str | None:
